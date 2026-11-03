@@ -1,0 +1,133 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>課堂文字雲</title>
+  <style>
+    :root { color-scheme: light dark; }
+    body { font-family: system-ui, "Noto Sans TC", sans-serif; max-width: 720px;
+           margin: 0 auto; padding: 16px; line-height: 1.6; }
+    input, button { font-size: 16px; padding: 10px; margin-top: 8px;
+                    border: 1px solid #888; border-radius: 6px; box-sizing: border-box; }
+    input { width: 100%; }
+    #seat { max-width: 40%; float: left; }
+    #word { max-width: 56%; float: right; }
+    .row::after { content: ""; display: table; clear: both; }
+    button { background: #1a73e8; color: #fff; border: 0; cursor: pointer; width: 100%; margin-top: 12px; }
+    button:disabled { opacity: .5; cursor: wait; }
+    #status { min-height: 1.5em; color: #1a7f37; font-size: 14px; }
+    #cloud { min-height: 120px; text-align: center; padding: 8px 0; }
+    #cloud span { display: inline-block; margin: 4px 8px; word-break: break-all; }
+    h3 { margin-top: 24px; }
+    .toggle { background: #666; }
+    #qrbox { text-align: center; margin-top: 24px; }
+    #qrbox img { background: #fff; padding: 8px; border-radius: 8px; }
+    footer { color: #888; font-size: 12px; margin-top: 32px; text-align: center; }
+  </style>
+</head>
+<body>
+  <h2>課堂文字雲</h2>
+  <p>輸入座號和一個詞，全班一起把想法貼到大螢幕上。</p>
+
+  <div class="row">
+    <input id="seat" placeholder="座號，例如 7 號" maxlength="10">
+    <input id="word" placeholder="想貼的詞（一個詞）" maxlength="20">
+  </div>
+  <button id="send">送出</button>
+  <p id="status"></p>
+
+  <h3>即時文字雲 <button id="toggle" class="toggle">隱藏</button></h3>
+  <div id="cloud">還沒有資料</div>
+
+  <div id="qrbox">
+    <h3>手機掃碼進來</h3>
+    <div id="qr"></div>
+  </div>
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js"></script>
+  <script type="module">
+    import { createClient } from 'https://esm.sh/@supabase/supabase-js@2'
+
+    // 這兩項本來就會被所有人看到，這是設計，不是漏洞（安全靠 RLS 把關）
+    const supabase = createClient(
+      'https://krxolbzshafhcucsblvt.supabase.co',
+      'sb_publishable_agcY2sbKF0u1990TOrJBmw_XXbnoUJw'
+    )
+
+    const $ = (id) => document.getElementById(id)
+    const show = (t) => { $('status').textContent = t }
+
+    async function sendWord() {
+      const seatNo = $('seat').value.trim()
+      const word = $('word').value.trim()
+      if (!word) { show('請輸入一個詞'); return }
+      $('send').disabled = true
+      show('送出中…')
+      const { error } = await supabase.from('wordcloud')
+        .insert({ seat_no: seatNo || '匿名', word })
+      $('send').disabled = false
+      if (error) { show('送出失敗：' + error.message); return }
+      $('word').value = ''
+      show('已送出')
+      loadWords()   // 自己也刷新一次
+    }
+
+    async function loadWords() {
+      const { data, error } = await supabase
+        .from('wordcloud')
+        .select('seat_no, word, created_at')
+        .order('created_at', { ascending: false })
+      if (error) { show('讀取失敗：' + error.message); return }
+      render(data)
+    }
+
+    let cloudVisible = true
+    function render(rows) {
+      const counts = {}
+      for (const r of rows) {
+        const w = r.word
+        counts[w] = (counts[w] || 0) + 1
+      }
+      const entries = Object.entries(counts)
+      const max = Math.max(1, ...entries.map(e => e[1]))
+      const box = $('cloud')
+      box.innerHTML = ''
+      if (!entries.length) {
+        box.textContent = '還沒有資料'
+        return
+      }
+      for (const [w, c] of entries) {
+        const s = document.createElement('span')
+        s.textContent = w
+        s.title = c + ' 次'
+        const ratio = c / max
+        s.style.fontSize = (16 + Math.round(ratio * 40)) + 'px'
+        s.style.opacity = c === 1 ? 1 : 0.9
+        box.appendChild(s)
+      }
+      show('共 ' + rows.length + ' 個詞')
+    }
+
+    // 即時：別人送出時自己更新（需 DB 已加入 realtime publication）
+    supabase
+      .channel('wordcloud-live')
+      .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'wordcloud' },
+          () => loadWords())
+      .subscribe()
+
+    $('toggle').addEventListener('click', () => {
+      cloudVisible = !cloudVisible
+      $('cloud').style.display = cloudVisible ? '' : 'none'
+      $('toggle').textContent = cloudVisible ? '隱藏' : '顯示'
+    })
+    $('send').addEventListener('click', sendWord)
+
+    // QR Code 指到本頁網址
+    new QRCode($('qr'), { text: location.href, width: 160, height: 160 })
+    loadWords()
+  </script>
+
+  <footer>資料只存座號，不存姓名・Supabase Realtime</footer>
+</body>
+</html>
